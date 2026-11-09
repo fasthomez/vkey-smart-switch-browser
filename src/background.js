@@ -8,14 +8,11 @@ if (typeof importScripts === "function" && typeof VKeyRules === "undefined") {
 const api = globalThis.browser || globalThis.chrome;
 const HOST_NAME = "io.github.phatmt97.vkey";
 const SESSION_MODES_KEY = "domainModes";
-const TAB_MODES_KEY = "tabModes";
 let port = null;
 let reconnectTimer = null;
 let nativeMessageQueue = Promise.resolve();
 let rules = [];
 let domainModes = {};
-let tabModes = {};
-let lastPublishedTab = null;
 let enabled = true;
 let nativeState = { status: "connecting", error: "" };
 
@@ -84,13 +81,13 @@ async function getActiveContext() {
   const windows = await api.windows.getLastFocused({ populate: true });
   const tab = windows && windows.tabs && windows.tabs.find((item) => item.active);
   const hostname = tab ? VKeyRules.hostnameFromUrl(tab.url) : "";
-  return { hostname, tabId: tab && tab.id, focused: Boolean(windows && windows.focused && hostname) };
+  return { hostname, focused: Boolean(windows && windows.focused && hostname) };
 }
 
-function nativeContext(hostname, focused, tabId) {
+function nativeContext(hostname, focused) {
   const contextActive = enabled && focused;
   const resolved = contextActive
-    ? VKeyRules.contextForTab(enabled, hostname, tabId, rules, domainModes, tabModes)
+    ? VKeyRules.contextForHostname(enabled, hostname, rules, domainModes)
     : { route: "default", mode: "default" };
   return {
     protocol: VKeyRules.NATIVE_PROTOCOL,
@@ -105,13 +102,8 @@ function nativeContext(hostname, focused, tabId) {
 async function publishActiveContext() {
   try {
     const context = await getActiveContext();
-    // Capture the tab identity associated with the most recently reported
-    // foreground hostname. Never attribute a delayed hotkey to a new tab.
-    lastPublishedTab = context.focused && Number.isSafeInteger(context.tabId)
-      ? { id: context.tabId, hostname: context.hostname } : null;
-    send(nativeContext(context.hostname, context.focused, context.tabId));
+    send(nativeContext(context.hostname, context.focused));
   } catch (_) {
-    lastPublishedTab = null;
     send(nativeContext("", false));
   }
 }
@@ -128,15 +120,6 @@ async function rememberNativeMode(message) {
   // The host includes the hostname captured with the hotkey so a quick tab
   // switch after the key press cannot attribute the event to the next tab.
   if (VKeyRules.routeForHostname(eventHostname, rules) === "english") return;
-  // Native protocol 2 carries hostname but no tab ID. Only remember a
-  // tab-specific result when the most recently published active tab matches
-  // the captured hostname. Otherwise retain the hostname-level fallback.
-  if (lastPublishedTab && lastPublishedTab.hostname === eventHostname) {
-    tabModes = { ...tabModes, [String(lastPublishedTab.id)]: mode };
-    await api.storage.session.set({ [TAB_MODES_KEY]: tabModes });
-    await publishActiveContext();
-    return;
-  }
   if (VKeyRules.modeForHostname(eventHostname, domainModes) === mode) return;
 
   domainModes = {
@@ -150,25 +133,16 @@ async function rememberNativeMode(message) {
 async function loadState() {
   const [stored, session] = await Promise.all([
     api.storage.local.get({ enabled: true, rules: [] }),
-    api.storage.session.get({ [SESSION_MODES_KEY]: {}, [TAB_MODES_KEY]: {} })
+    api.storage.session.get({ [SESSION_MODES_KEY]: {} })
   ]);
   enabled = stored.enabled !== false;
   rules = VKeyRules.normalizeRules(stored.rules);
   domainModes = VKeyRules.normalizeDomainModes(session[SESSION_MODES_KEY]);
-  tabModes = session[TAB_MODES_KEY] && typeof session[TAB_MODES_KEY] === "object"
-    ? session[TAB_MODES_KEY] : {};
 }
 
 api.runtime.onInstalled.addListener(async () => { await loadState(); connect(); });
 api.runtime.onStartup.addListener(async () => { await loadState(); connect(); });
 api.tabs.onActivated.addListener(publishActiveContext);
-api.tabs.onRemoved.addListener(async (tabId) => {
-  if (Object.prototype.hasOwnProperty.call(tabModes, String(tabId))) {
-    const { [String(tabId)]: _removed, ...remaining } = tabModes;
-    tabModes = remaining;
-    await api.storage.session.set({ [TAB_MODES_KEY]: tabModes });
-  }
-});
 api.tabs.onUpdated.addListener((_tabId, change) => {
   if (change.url || change.status === "complete") publishActiveContext();
 });
@@ -183,10 +157,6 @@ api.storage.onChanged.addListener(async (changes, area) => {
     const stored = await api.storage.local.get({ enabled: true, rules: [] });
     enabled = stored.enabled !== false;
     rules = VKeyRules.normalizeRules(stored.rules);
-    await publishActiveContext();
-  }
-  if (area === "session" && changes[TAB_MODES_KEY]) {
-    tabModes = changes[TAB_MODES_KEY].newValue || {};
     await publishActiveContext();
   }
   if (area === "session" && changes[SESSION_MODES_KEY]) {

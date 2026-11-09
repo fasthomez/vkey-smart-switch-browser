@@ -83,14 +83,3 @@ test("native hotkey events expose only a valid V/E result", () => {
     mode: "english"
   }), null);
 });
-
-test("tab mode overrides domain without overriding English hard rule", () => {
-  assert.deepEqual(
-    rules.contextForTab(true, "example.com", 11, [], {"example.com":"vietnamese"}, {"11":"english"}),
-    {route:"default",mode:"english"}
-  );
-  assert.deepEqual(
-    rules.contextForTab(true, "example.com", 11, [{hostname:"example.com",route:"english"}], {}, {"11":"vietnamese"}),
-    {route:"english",mode:"default"}
-  );
-});
