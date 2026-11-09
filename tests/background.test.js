@@ -32,6 +32,7 @@ async function startBackground(local = { enabled: true, rules: [] }) {
   const nativeMessages = eventTarget();
   const nativeDisconnect = eventTarget();
   const posted = [];
+  let activeTab = { id: 11, active: true, url: "https://example.com/editor" };
   const port = {
     onMessage: nativeMessages,
     onDisconnect: nativeDisconnect,
@@ -65,14 +66,15 @@ async function startBackground(local = { enabled: true, rules: [] }) {
       async getLastFocused() {
         return {
           focused: true,
-          tabs: [{ active: true, url: "https://example.com/editor" }]
+          tabs: [activeTab]
         };
       },
       onFocusChanged: eventTarget()
     },
     tabs: {
       onActivated: eventTarget(),
-      onUpdated: eventTarget()
+      onUpdated: eventTarget(),
+      onRemoved: eventTarget()
     }
   };
   vm.runInNewContext(backgroundSource, {
@@ -87,7 +89,18 @@ async function startBackground(local = { enabled: true, rules: [] }) {
     console
   }, { filename: "background.js" });
   await flushTasks();
-  return { nativeMessages, posted, sessionData };
+  return {
+    nativeMessages, posted, sessionData,
+    async switchTab(id, url) {
+      activeTab = { id, active: true, url };
+      api.tabs.onActivated.emit({ tabId: id });
+      await flushTasks();
+    },
+    async closeTab(id) {
+      api.tabs.onRemoved.emit(id);
+      await flushTasks();
+    }
+  };
 }
 
 test("native hotkey result is remembered in session storage and republished", async () => {
@@ -103,7 +116,7 @@ test("native hotkey result is remembered in session storage and republished", as
   });
   await flushTasks();
 
-  assert.deepEqual({ ...background.sessionData.domainModes }, { "example.com": "english" });
+  assert.deepEqual({ ...background.sessionData.tabModes }, { "11": "english" });
   assert.equal(background.posted.at(-1).mode, "english");
 });
 
@@ -132,6 +145,7 @@ test("hard English rule ignores native hotkey results", async () => {
   await flushTasks();
 
   assert.equal(background.sessionData.domainModes, undefined);
+  assert.equal(background.sessionData.tabModes, undefined);
   assert.equal(background.posted.at(-1).route, "english");
   assert.equal(background.posted.at(-1).mode, "default");
 });
@@ -154,4 +168,21 @@ test("hotkey event keeps the hostname captured by the native host", async () => 
   // remembered mode from other.example.com into its context.
   assert.equal(background.posted.at(-1).hostname, "example.com");
   assert.equal(background.posted.at(-1).mode, "default");
+});
+
+test("two tabs on same hostname retain independent VI/EN choices", async () => {
+  const background = await startBackground();
+  background.nativeMessages.emit({protocol:2,event:"mode-changed",hostname:"example.com",mode:"english"});
+  await flushTasks();
+  await background.switchTab(22, "https://example.com/remote");
+  assert.equal(background.posted.at(-1).mode, "default");
+  background.nativeMessages.emit({protocol:2,event:"mode-changed",hostname:"example.com",mode:"vietnamese"});
+  await flushTasks();
+  assert.equal(background.posted.at(-1).mode, "vietnamese");
+  await background.switchTab(11, "https://example.com/editor");
+  assert.equal(background.posted.at(-1).mode, "english");
+  await background.switchTab(22, "https://example.com/remote");
+  assert.equal(background.posted.at(-1).mode, "vietnamese");
+  await background.closeTab(22);
+  assert.equal(background.sessionData.tabModes["22"], undefined);
 });

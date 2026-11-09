@@ -62,6 +62,21 @@
       : "default";
   }
 
+  // A tab-specific session choice takes precedence over a remembered hostname.
+  // The browser supplies a stable tab ID within its current session.
+  function modeForTab(tabId, tabModes) {
+    if (!Number.isSafeInteger(tabId) || tabId < 0 || !tabModes || typeof tabModes !== "object") return "default";
+    const mode = tabModes[String(tabId)];
+    return mode === "vietnamese" || mode === "english" ? mode : "default";
+  }
+
+  function contextForTab(enabled, hostname, tabId, rules, domainModes, tabModes) {
+    const context = contextForHostname(enabled, hostname, rules, domainModes);
+    if (!enabled || context.route === "english") return context;
+    const selected = modeForTab(tabId, tabModes);
+    return { ...context, mode: selected === "default" ? context.mode : selected };
+  }
+
   function contextForHostname(enabled, hostname, rules, domainModes) {
     if (!enabled) return { route: "default", mode: "default" };
     const route = routeForHostname(hostname, rules);
@@ -107,6 +122,8 @@
     routeForContext,
     modeForHostname,
     contextForHostname,
+    contextForTab,
+    modeForTab,
     modeFromNativeMessage,
     hostnameFromUrl
   };
